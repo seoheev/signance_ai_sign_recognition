@@ -1,5 +1,6 @@
 # ~/src/data.py
 # -*- coding: utf-8 -*-
+
 """
 데캡 공용 데이터/유틸 모듈
 
@@ -38,32 +39,123 @@ from torch.utils.data import Dataset
 # =========================================================
 # vocab 로드 (두 포맷 지원)
 # =========================================================
+
 def load_vocab(vocab_path: Path) -> Tuple[List[str], dict]:
     """
     반환: (itos, stoi)
       - itos[i] = 토큰 문자열
       - stoi[token] = id(int)
+
+    지원 포맷:
+      1) {"tokens": [ ... ]}
+      2) {"itos": [...], "stoi": {...}}
+      3) {"stoi": {token: id, ...}}
+      4) {"id_map": {token: id, ...}}
+      5) {token: id, ...}  (id-map dict 그대로)
     """
     with open(vocab_path, "r", encoding="utf-8-sig") as f:
         obj = json.load(f)
 
-    # 케이스 A) {"tokens":[...]}
+    # -------------------------
+    # 케이스 1) {"tokens": [...]}
+    # -------------------------
     if isinstance(obj, dict) and "tokens" in obj:
         toks = list(obj["tokens"])
+
         # 0번은 항상 <blank>
         if len(toks) == 0 or toks[0] != "<blank>":
+            # 혹시 기존 리스트 안에 <blank>가 들어있다면 제거 후 맨 앞에
+            if "<blank>" in toks:
+                toks.remove("<blank>")
             toks = ["<blank>"] + toks
-        # 1번은 <unk> 보장
+
+        # 1번은 항상 <unk>
         if "<unk>" not in toks:
             toks.insert(1, "<unk>")
+        else:
+            # 이미 다른 위치에 있다면 1번 위치로 강제 이동
+            if toks[1] != "<unk>":
+                toks.remove("<unk>")
+                toks.insert(1, "<unk>")
+
         itos = toks
         stoi = {t: i for i, t in enumerate(itos)}
         return itos, stoi
 
-    # 케이스 B) id-map {token:id, ...}
+    # -------------------------
+    # 케이스 2) {"itos": [...], "stoi": {...}} 또는 {"itos":[...]}
+    #   - 우리가 만든 포맷 지원
+    # -------------------------
+    if isinstance(obj, dict) and ("itos" in obj or "stoi" in obj):
+        raw_itos = obj.get("itos")
+        raw_stoi = obj.get("stoi")
+
+        if raw_itos is not None:
+            # 리스트에서 복사
+            itos = list(raw_itos)
+            # 뒤쪽 빈 슬롯 제거
+            while len(itos) > 0 and itos[-1] in ("", None):
+                itos.pop()
+        elif isinstance(raw_stoi, dict):
+            # stoi만 있으면 id-map으로부터 itos 복원
+            try:
+                id_map = {str(k): int(v) for k, v in raw_stoi.items()}
+            except Exception as e:
+                raise ValueError(f"vocab stoi value must be int: {e}")
+            max_id = max(id_map.values()) if id_map else -1
+            itos = [""] * (max_id + 1)
+            for tok, idx in id_map.items():
+                if idx < 0:
+                    raise ValueError(f"negative id for token {tok}: {idx}")
+                if idx >= len(itos):
+                    itos.extend([""] * (idx - len(itos) + 1))
+                itos[idx] = tok
+            # 뒤쪽 빈 슬롯 제거
+            while len(itos) > 0 and itos[-1] in ("", None):
+                itos.pop()
+        else:
+            raise ValueError("vocab with 'itos'/'stoi' must contain at least one of them properly.")
+
+        # 0:<blank>, 1:<unk> 보정
+        if len(itos) == 0:
+            itos = ["<blank>", "<unk>"]
+        else:
+            # 0번 <blank> 강제
+            if itos[0] != "<blank>":
+                if "<blank>" in itos:
+                    itos.remove("<blank>")
+                itos.insert(0, "<blank>")
+
+            # 1번 <unk> 강제
+            if "<unk>" not in itos:
+                if len(itos) == 1:
+                    itos.append("<unk>")
+                else:
+                    itos.insert(1, "<unk>")
+            else:
+                if itos[1] != "<unk>":
+                    itos.remove("<unk>")
+                    itos.insert(1, "<unk>")
+
+        stoi = {t: i for i, t in enumerate(itos)}
+        return itos, stoi
+
+    # -------------------------
+    # 케이스 3) id-map 계열:
+    #   - {"stoi":{...}} / {"id_map":{...}} / {token:id,...}
+    # -------------------------
     if isinstance(obj, dict):
+        # 먼저 안쪽에 있는 id-map 찾기
+        if "stoi" in obj and isinstance(obj["stoi"], dict):
+            id_src = obj["stoi"]
+        elif "id_map" in obj and isinstance(obj["id_map"], dict):
+            id_src = obj["id_map"]
+        else:
+            # 최상단 dict 자체가 id-map이라고 가정
+            id_src = obj
+
         try:
-            id_map = {str(k): int(v) for k, v in obj.items()}
+            id_map = {str(k): int(v) for k, v in id_src.items()}
         except Exception as e:
             raise ValueError(f"vocab id-map value must be int: {e}")
 
@@ -76,19 +168,28 @@ def load_vocab(vocab_path: Path) -> Tuple[List[str], dict]:
                 itos.extend([""] * (idx - len(itos) + 1))
             itos[idx] = tok
 
-        # 0:<blank> 보장
+        # 0:<blank>, 1:<unk> 보정
         if len(itos) == 0:
             itos = ["<blank>", "<unk>"]
         else:
             if itos[0] in ("", None):
                 itos[0] = "<blank>"
-            # 1:<unk> 보장
+            elif itos[0] != "<blank>":
+                # 이미 다른 위치에 있다면 제거 후 0번으로
+                if "<blank>" in itos:
+                    itos.remove("<blank>")
+                itos.insert(0, "<blank>")
+
             if "<unk>" not in itos:
                 if len(itos) == 1:
                     itos.append("<unk>")
                 elif itos[1] in ("", None):
                     itos[1] = "<unk>"
                 else:
+                    itos.insert(1, "<unk>")
+            else:
+                if itos[1] != "<unk>":
+                    itos.remove("<unk>")
                     itos.insert(1, "<unk>")
 
         # 뒤쪽 빈 슬롯 제거
@@ -98,7 +199,8 @@ def load_vocab(vocab_path: Path) -> Tuple[List[str], dict]:
         stoi = {t: i for i, t in enumerate(itos)}
         return itos, stoi
 
-    raise ValueError("vocab.json must be either {'tokens':[...]} or id-map dict")
+    # 어떤 케이스에도 안 걸리면 에러
+    raise ValueError("vocab.json must be one of: {'tokens':[...]} / {'itos','stoi'} / id-map dict")
 
 
 # =========================================================

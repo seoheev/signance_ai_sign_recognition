@@ -28,6 +28,35 @@ import matplotlib.pyplot as plt
 from data_word import WordDataset, collate_word
 from data import load_vocab
 from models import HybridBackbone, WordClassifier
+# --- add: Korean font setup ---
+import os
+from matplotlib import font_manager, rcParams
+
+def set_korean_font():
+    # 환경변수로 직접 경로 지정 가능 (권장)
+    env_font = os.getenv("KOREAN_FONT")
+    candidates = [env_font] if env_font else []
+
+    # 우분투 기본 설치 폰트 후보
+    candidates += [
+        "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",             # fonts-nanum
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",      # fonts-noto-cjk
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    ]
+
+    for p in candidates:
+        if p and os.path.exists(p):
+            font_manager.fontManager.addfont(p)
+            name = font_manager.FontProperties(fname=p).get_name()
+            rcParams["font.family"] = name
+            rcParams["axes.unicode_minus"] = False  # 마이너스 깨짐 방지
+            return True
+
+    # 폰트를 못 찾았어도 마이너스만은 안 깨지게
+    rcParams["axes.unicode_minus"] = False
+    return False
+# --- end add ---
+
 
 def try_import_sklearn():
     try:
@@ -52,7 +81,9 @@ def build_model(ckpt_path: str, V: int, in_dim_cli: int, device: str):
         subsample_stages=subsample_stages
     ).to(device)
     model = WordClassifier(backbone, vocab_size=V).to(device)
-    model.load_state(state)
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    if missing or unexpected:
+        print(f"[warn] state_dict 불일치 - missing={missing}, unexpected={unexpected}")
     return model, in_dim_ck, subsample_stages, hid
 
 def plot_confusion_matrix(cm: np.ndarray, labels: list, out_png: str):
@@ -74,6 +105,7 @@ def plot_confusion_matrix(cm: np.ndarray, labels: list, out_png: str):
 
 def main():
     pa = argparse.ArgumentParser()
+    set_korean_font()
     pa.add_argument('--data-root', default=str(Path(__file__).parent.parent / 'datasets'))
     pa.add_argument('--npz_subdir', default='npz/eco')
     pa.add_argument('--csv-name', default='labels.csv')
@@ -183,11 +215,11 @@ def main():
                 # class별 precision/recall/f1/support를 CSV로 내보내기
                 from sklearn.metrics import precision_recall_fscore_support
                 import csv
-                p, r, f, s = precision_recall_fscore_support(y_true, y_pred, labels=class_ids, zero_division=0)
+                p, r, f, support = precision_recall_fscore_support(y_true, y_pred, labels=class_ids, zero_division=0)
                 with out.open('w', newline='', encoding='utf-8') as f:
                     w = csv.writer(f)
                     w.writerow(['label','precision','recall','f1','support'])
-                    for name, pi, ri, fi, si in zip(class_names, p, r, f, s):
+                    for name, pi, ri, fi, si in zip(class_names, p, r, f, support):
                         w.writerow([name, f"{pi:.6f}", f"{ri:.6f}", f"{fi:.6f}", int(si)])
                 print(f"✓ saved classification report CSV → {out}")
             else:
