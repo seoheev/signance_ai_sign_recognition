@@ -1,6 +1,16 @@
 # ~/src/eval_sent.py
 # -*- coding: utf-8 -*-
+
 """
+Sentence CTC 평가 스크립트 (print-examples 옵션 추가 버전)
+- GlossSeqDataset + SentenceCTC용
+- Metrics:
+  - avg CTC loss (valid)
+  - sequence exact match accuracy
+  - token-level CER (edit distance 기반)
+  - avg ref/pred length
+  - blank-only ratio
+  - unique token recall / precision
 Sentence CTC 평가 스크립트 (print-examples 옵션 추가 버전)
 """
 
@@ -165,11 +175,9 @@ def main():
 
             # Extract gold labels
             gts = []
-            idx = 0
             for b in range(bs):
                 L = int(y_len[b])
-                gts.append(Y[idx:idx+L].tolist())
-                idx += L
+                gts.append(Y[b, :L].tolist())
 
             # Metrics
             for p, g in zip(preds, gts):
